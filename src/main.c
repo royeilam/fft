@@ -24,14 +24,14 @@ double * create_sine(size_t length, double freq, double fs)
     return result;
 }
 
-double get_max_freq(const complex_t fft_data[], const size_t fft_len, const double fs)
+double get_max_freq(const double complex fft_data[], const size_t fft_len, const double fs)
 {
     double max_abs = 0.0;
     size_t max_idx = 0;
 
     for (size_t i = 0; i < fft_len/2; i++)
     {
-        double abs_val = complex_abs(&fft_data[i]);
+        double abs_val = cabs(fft_data[i]);
         if (abs_val > max_abs)
         {
             max_abs = abs_val;
@@ -48,11 +48,11 @@ int main(int argc, char * argv[])
     (void)argv;
     size_t result_size = 0;
     size_t my_sine_size = 2048;
-    double freq = 300.0;
+    double freq = 100;
     double fs = 1E3;
 
     double * my_sine = NULL;
-    complex_t * fft_result = NULL;
+    double complex * fft_result = NULL;
 
     if (argc > 1)
     {
