@@ -1,9 +1,9 @@
 TARGET=fft.out
 CC=gcc
 
-CFLAGS=-Wall -Wextra -pedantic -g
+CFLAGS=-Wall -Wextra -g
 CFLAGS+=-I$(INC)
-LIBS=-lm
+LIBS=-lm `pkg-config --libs portaudio-2.0`
 
 OBJ_DIR=build
 
