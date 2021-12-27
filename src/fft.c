@@ -34,9 +34,9 @@ static inline unsigned int get_max_bit(size_t in)
     return i - 1;
 }
 
-static double complex * create_bit_reversal(const double d_input[], const size_t input_size, size_t * const output_size)
+static fft_output_t * create_bit_reversal(const fft_input_t d_input[], const size_t input_size, size_t * const output_size)
 {
-    double complex * result = NULL;
+    fft_output_t * result = NULL;
 
     *output_size = input_size;
     if (input_size & (input_size - 1))
@@ -47,14 +47,14 @@ static double complex * create_bit_reversal(const double d_input[], const size_t
         *output_size = (1U << (i + 1));
     }
 
-    result = calloc(*output_size, sizeof(double complex));
+    result = calloc(*output_size, sizeof(fft_output_t));
     if (result == NULL)
     {
         *output_size = 0;
         return NULL;
     }
 
-    memset(result, 0, *output_size * sizeof(double complex));
+    memset(result, 0, *output_size * sizeof(fft_output_t));
 
     unsigned int max_bit = get_max_bit(*output_size);
     for (size_t i = 0; i < input_size; i++)
@@ -67,24 +67,24 @@ static double complex * create_bit_reversal(const double d_input[], const size_t
     return result;
 }
 
-double complex * fft(const double d_input[], const size_t input_size, size_t * const output_size)
+fft_output_t * fft(const fft_input_t d_input[], const size_t input_size, size_t * const output_size)
 {
-    double complex * result;
+    fft_output_t * result;
     size_t s = 0;
     result = create_bit_reversal(d_input, input_size, output_size);
 
     for (s = 1; s <= get_max_bit(*output_size); s++)
     {
         size_t m = (1U << s);
-        double complex w = 1;
-        double complex w_m = cexp(I*2*M_PI/m);
+        fft_output_t w = 1;
+        fft_output_t w_m = cexpf(I*2*M_PI/m);
 
         for (size_t j = 0; j < m/2; j++)
         {
             for (size_t k = j; k < *output_size; k+=m)
             {
-                double complex t = w * result[k + m/2];
-                double complex u = result[k];
+                fft_output_t t = w * result[k + m/2];
+                fft_output_t u = result[k];
 
                 result[k] = u + t;
                 result[k + m/2] = u - t;

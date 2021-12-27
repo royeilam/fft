@@ -4,7 +4,11 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <math.h>
+#include <assert.h>
+#include <termios.h>
+#include <unistd.h>
 #include <portaudio.h>
+#include "fft.h"
 
 /**************************************************
  * Defines
@@ -13,32 +17,77 @@
 printf("[DEBUG::%s.%d] " fmt,__FUNCTION__ ,__LINE__, ##__VA_ARGS__);\
 fflush(stdout)
 
-#define SAMPLE_RATE 1000
-#define RECORD_TIME 5
-#define DATA_SIZE (SAMPLE_RATE * RECORD_TIME + 1)
+#define PA_ASSERT(func_call, fail_msg_formt, ...) \
+{ \
+    PaError err_code = func_call; \
+    if ( err_code != paNoError) \
+    { \
+        fprintf(stderr, "PortAudio ERROR (%s.%d):\nPortAudio Error: %s\n" \
+        fail_msg_formt, __FUNCTION__, \
+        __LINE__, Pa_GetErrorText(err_code), ##__VA_ARGS__); \
+        exit(EXIT_FAILURE); \
+    } \
+}
 
-typedef int32_t record_data_t;
+#define BUFFER_SIZE 1024
+#define NUM_BUFFERS 2
+
+/**************************************************
+ * Typedefs
+ **************************************************/
+typedef float record_data_t;
+
+/**************************************************
+ * Local variables
+ **************************************************/
+static struct termios orig_termios;
+static record_data_t record_data[NUM_BUFFERS][BUFFER_SIZE] = { 0 };
 
 
-static record_data_t record_data[DATA_SIZE] = { 0 };
-
-static struct RecordCBData
+/**************************************************
+ * Local functions
+ **************************************************/
+static void disable_raw_terminal(void)
 {
-    bool stop_record;
-    record_data_t * data;
-    size_t frame_count;
-    const size_t max_frames; 
-    double sample_rate;
-    double record_time;
-} record_cb_data = 
+    assert(tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) != -1);
+}
+
+static void enable_raw_terminal(void)
 {
-    .stop_record = false,
-    .data = record_data,
-    .frame_count = 0,
-    .max_frames = DATA_SIZE,
-    .sample_rate = SAMPLE_RATE,
-    .record_time = RECORD_TIME,
-};
+    struct termios raw;
+
+    assert(tcgetattr(STDIN_FILENO, &orig_termios) != -1);
+    raw = orig_termios;
+
+    // Call disable_raw_terminal function when exiting the process
+    atexit(disable_raw_terminal);
+    
+    // Modify termios flags
+    raw.c_lflag &= ~(ECHO | ICANON);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    assert(tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != -1);
+}
+
+static bool check_if_q(void)
+{
+    ssize_t num_char;
+    char c;
+
+    num_char = read(STDOUT_FILENO, &c, 1);
+    if (num_char == -1 && errno != EAGAIN) assert(0);
+    if (num_char == -1)
+    {
+        return false;
+    }
+
+    if (c == 'q' || c == 'Q')
+    {
+        return true;
+    }
+
+    return false;
+}
 
 static int audio_in_cb( const void *input, void *output,
                         unsigned long frameCount,
@@ -46,33 +95,22 @@ static int audio_in_cb( const void *input, void *output,
                         PaStreamCallbackFlags statusFlags,
                         void *userData )
 {
+    // TODO: Remove:
+    // paComplete
+    // paContinue
     (void)timeInfo;
     (void)output;
     (void)statusFlags;
     (void)userData;
+    int * buffer_idx = (int *)userData;
+    record_data_t * data = NULL;
 
-    if (input && record_cb_data.frame_count < record_cb_data.max_frames)
+    *buffer_idx ^= 1;
+    data = &record_data[*buffer_idx][0];
+
+    for (unsigned long i = 0; i < frameCount; i++)
     {
-        size_t diff = record_cb_data.max_frames - record_cb_data.frame_count;
-        if (frameCount > diff)
-        {
-            frameCount -= diff;
-        }
-
-        for (unsigned long i = 0; i < frameCount; i++)
-        {
-            record_cb_data.data[record_cb_data.frame_count++] = ((record_data_t *)input)[i];
-        }
-
-        if (record_cb_data.max_frames == record_cb_data.frame_count)
-        {
-            return paComplete;
-        }
-    }
-
-    if (record_cb_data.stop_record)
-    {
-        return paComplete;
+        data[i] = ((record_data_t *)input)[i];
     }
 
     return paContinue;
@@ -82,33 +120,21 @@ static int pa_init( PaStream ** const stream, const double fs,
                     PaStreamCallback * const callback,
                     void * const user_data)
 {
-    PaError pa_err_code;
     const unsigned long FRAMES_PER_BUFFER = 1024;
     const PaDeviceInfo * device_info = NULL;
     PaStreamParameters pa_input_parameters;
 
-    DBG_PRINT("Before Initializing PortAudio\n");
-    if ( (pa_err_code = Pa_Initialize()) != paNoError )
-    {
-        fprintf(stderr, "Cannot initialize PortAudio library.\n"
-                "Error: %s\n", Pa_GetErrorText(pa_err_code));
-        return -1;
-    }
+    PA_ASSERT(Pa_Initialize(),"Cannot initialize PortAudio library.");
 
     pa_input_parameters.device = Pa_GetDefaultInputDevice(),
     pa_input_parameters.channelCount = 1,
-    pa_input_parameters.sampleFormat = paInt32,
+    pa_input_parameters.sampleFormat = paFloat32,
     pa_input_parameters.hostApiSpecificStreamInfo = NULL,
     device_info = Pa_GetDeviceInfo(pa_input_parameters.device);
-    if (device_info == NULL)
-    {
-        fprintf(stderr, "[PortAudio]: Cannot open device information for read\n");
-        return -1;
-    }
+    assert(device_info != NULL);
     pa_input_parameters.suggestedLatency = device_info->defaultHighInputLatency;
 
-    DBG_PRINT("Start Recording\n");
-    pa_err_code = Pa_OpenStream
+    PA_ASSERT(Pa_OpenStream
     (
         stream,               // Stream
         &pa_input_parameters, // Input Parameters
@@ -118,83 +144,76 @@ static int pa_init( PaStream ** const stream, const double fs,
         paNoFlag,             // Control Flags
         callback,             // Callback function pointer
         user_data             // User data
-    );
-
-    if (pa_err_code != paNoError)
-    {
-        fprintf(stderr, "Cannot opean stream for record\n"
-                "Error: %s\n", Pa_GetErrorText(pa_err_code));
-        return -1;
-    }
+    ),
+    "Cannot opean stream for record");
 
     return 0;
 
 }
 
-static int write_data_to_file(const char file_name[],
-                               record_data_t data[], size_t data_len)
+static fft_input_t get_max_freq(const fft_output_t data[], const size_t length, const double fs)
 {
-    FILE * file_handler = NULL;
+    fft_input_t max_val;
+    size_t max_val_idx;
 
-    if (file_name == NULL || data == NULL || data_len == 0)
+    if (length == 0)
     {
-        return EINVAL;
+        return -1.0;
     }
 
-    file_handler = fopen(file_name, "w");
-    if (file_handler == NULL)
+    max_val = cabsf(data[0]);
+    max_val_idx = 0;
+
+    for(size_t i = 1; i < length / 2; i++)
     {
-        return errno;
+        fft_input_t cur_abs_val = cabsf(data[i]);
+
+        if (cur_abs_val > max_val)
+        {
+            max_val = cur_abs_val;
+            max_val_idx = i;
+        }
     }
 
-    fwrite(data, sizeof(*data), data_len, file_handler);
-
-    fclose(file_handler);
-
-    return 0;
+    // Tranform from index to frequency
+    return (fft_input_t)max_val_idx / (length / 2) * (fs / 2);
 }
 
 int main(int argc, char * argv[])
 {
     PaError pa_err_code;
     PaStream * stream;
+    fft_output_t * fft_data = NULL;
+    size_t fft_length = 0;
+    double fs = 1E3;
+    int buf_idx = 0;
     (void)argc;
     (void)argv;
 
-    DBG_PRINT("Before calling pa_init()\n");
-    if (pa_init(&stream, record_cb_data.sample_rate, audio_in_cb, NULL))
+    enable_raw_terminal();
+
+    if (pa_init(&stream, fs, audio_in_cb, &buf_idx))
     {
         return EXIT_FAILURE;
     }
 
     Pa_StartStream(stream);
 
-    while ((pa_err_code = Pa_IsStreamActive(stream)) == 1)
+    while ((pa_err_code = Pa_IsStreamActive(stream)) == 1 &&
+            !check_if_q() )
     {
-        Pa_Sleep(RECORD_TIME * 1000 + 500);
-        record_cb_data.stop_record = true;
+        fft_input_t max_freq;
+
+        fft_data = fft(record_data[buf_idx], BUFFER_SIZE, &fft_length);
+        max_freq = get_max_freq(fft_data, fft_length, fs);
+        printf("Max freq = %f\r", max_freq);
+        free(fft_data);
     }
 
-    if ( (pa_err_code = Pa_CloseStream(stream)) != paNoError)
-    {
-        fprintf(stderr, "Cannot close PortAudio stream.\n"
-                "Error: %s\n", Pa_GetErrorText(pa_err_code));
-    }
+    PA_ASSERT(Pa_CloseStream(stream), "Cannot close PortAudio stream.");
 
-    DBG_PRINT("Stopped Recording\n");
-    if ( (pa_err_code = Pa_Terminate()) != paNoError )
-    {
-        fprintf(stderr, "Error closing Portable Audio library.\n"
-                "Error: %s\n", Pa_GetErrorText(pa_err_code));
-        return EXIT_FAILURE;
-    }
-
-    if (write_data_to_file("test_file.raw",
-                           record_cb_data.data,
-                           record_cb_data.frame_count))
-    {
-        fprintf(stderr, "Error writing to file\n");
-    }
+    PA_ASSERT(Pa_Terminate(), "Error closing Portable Audio library.");
 
     return EXIT_SUCCESS;
 }
+
