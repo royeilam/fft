@@ -34,46 +34,39 @@ static inline unsigned int get_max_bit(size_t in)
     return i - 1;
 }
 
-static fft_output_t * create_bit_reversal(const fft_input_t d_input[], const size_t input_size, size_t * const output_size)
+fft_output_t * create_fft_data(size_t * const length)
 {
-    fft_output_t * result = NULL;
-
-    *output_size = input_size;
-    if (input_size & (input_size - 1))
+    if (*length &(*length - 1))
     {
         unsigned int i;
 
-        i = get_max_bit(input_size);
-        *output_size = (1U << (i + 1));
+        i = get_max_bit(*length);
+        *length = (1U << (i + 1));
     }
 
-    result = calloc(*output_size, sizeof(fft_output_t));
-    if (result == NULL)
-    {
-        *output_size = 0;
-        return NULL;
-    }
-
-    memset(result, 0, *output_size * sizeof(fft_output_t));
-
-    unsigned int max_bit = get_max_bit(*output_size);
-    for (size_t i = 0; i < input_size; i++)
-    {
-        size_t idx = bit_reversal(i, max_bit);
-        result[idx] = d_input[i];
-    }
-
-    
-    return result;
+    return calloc(*length, sizeof(fft_output_t));
 }
 
-fft_output_t * fft(const fft_input_t d_input[], const size_t input_size, size_t * const output_size)
+static void create_bit_reversal(const fft_input_t in_data[], const size_t in_len,
+                                fft_output_t out_data[], const size_t out_len)
 {
-    fft_output_t * result;
-    size_t s = 0;
-    result = create_bit_reversal(d_input, input_size, output_size);
+    memset(out_data + in_len, 0, (out_len - in_len) * sizeof(fft_output_t));
 
-    for (s = 1; s <= get_max_bit(*output_size); s++)
+    unsigned int max_bit = get_max_bit(out_len);
+    for (size_t i = 0; i < in_len; i++)
+    {
+        size_t idx = bit_reversal(i, max_bit);
+        out_data[idx] = in_data[i];
+    }
+}
+
+void fft(const fft_input_t in_data[], const size_t in_len,
+         fft_output_t out_data[], const size_t out_len)
+{
+    size_t s = 0;
+    create_bit_reversal(in_data, in_len, out_data, out_len);
+
+    for (s = 1; s <= get_max_bit(out_len); s++)
     {
         size_t m = (1U << s);
         fft_output_t w = 1;
@@ -81,18 +74,16 @@ fft_output_t * fft(const fft_input_t d_input[], const size_t input_size, size_t 
 
         for (size_t j = 0; j < m/2; j++)
         {
-            for (size_t k = j; k < *output_size; k+=m)
+            for (size_t k = j; k < out_len; k+=m)
             {
-                fft_output_t t = w * result[k + m/2];
-                fft_output_t u = result[k];
+                fft_output_t t = w * out_data[k + m/2];
+                fft_output_t u = out_data[k];
 
-                result[k] = u + t;
-                result[k + m/2] = u - t;
+                out_data[k] = u + t;
+                out_data[k + m/2] = u - t;
             }
 
             w *= w_m;
         }
     }
-
-    return result;
 }

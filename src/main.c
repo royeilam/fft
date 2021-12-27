@@ -95,9 +95,6 @@ static int audio_in_cb( const void *input, void *output,
                         PaStreamCallbackFlags statusFlags,
                         void *userData )
 {
-    // TODO: Remove:
-    // paComplete
-    // paContinue
     (void)timeInfo;
     (void)output;
     (void)statusFlags;
@@ -132,7 +129,7 @@ static int pa_init( PaStream ** const stream, const double fs,
     pa_input_parameters.hostApiSpecificStreamInfo = NULL,
     device_info = Pa_GetDeviceInfo(pa_input_parameters.device);
     assert(device_info != NULL);
-    pa_input_parameters.suggestedLatency = device_info->defaultHighInputLatency;
+    pa_input_parameters.suggestedLatency = device_info->defaultLowInputLatency;
 
     PA_ASSERT(Pa_OpenStream
     (
@@ -184,13 +181,17 @@ int main(int argc, char * argv[])
     PaError pa_err_code;
     PaStream * stream;
     fft_output_t * fft_data = NULL;
-    size_t fft_length = 0;
-    double fs = 1E3;
+    size_t fft_length = BUFFER_SIZE;
+    double fs = 8E3;
     int buf_idx = 0;
+    size_t temp_cnt = 0;
     (void)argc;
     (void)argv;
 
     enable_raw_terminal();
+
+    fft_data = create_fft_data(&fft_length);
+    assert(fft_data != NULL);
 
     if (pa_init(&stream, fs, audio_in_cb, &buf_idx))
     {
@@ -204,11 +205,12 @@ int main(int argc, char * argv[])
     {
         fft_input_t max_freq;
 
-        fft_data = fft(record_data[buf_idx], BUFFER_SIZE, &fft_length);
+        fft(record_data[buf_idx], BUFFER_SIZE, fft_data, fft_length);
         max_freq = get_max_freq(fft_data, fft_length, fs);
-        printf("Max freq = %f\r", max_freq);
-        free(fft_data);
+        printf("Max freq = %f, %zu\r", max_freq, temp_cnt++);
     }
+
+    free(fft_data);
 
     PA_ASSERT(Pa_CloseStream(stream), "Cannot close PortAudio stream.");
 
