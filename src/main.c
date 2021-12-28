@@ -8,6 +8,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <portaudio.h>
+#include <pthread.h>
 #include "fft.h"
 
 /**************************************************
@@ -23,7 +24,7 @@ fflush(stdout)
     if ( err_code != paNoError) \
     { \
         fprintf(stderr, "PortAudio ERROR (%s.%d):\nPortAudio Error: %s\n" \
-        fail_msg_formt, __FUNCTION__, \
+        fail_msg_formt, __func__, \
         __LINE__, Pa_GetErrorText(err_code), ##__VA_ARGS__); \
         exit(EXIT_FAILURE); \
     } \
@@ -42,7 +43,7 @@ typedef float record_data_t;
  **************************************************/
 static struct termios orig_termios;
 static record_data_t record_data[NUM_BUFFERS][BUFFER_SIZE] = { 0 };
-
+static pthread_spinlock_t new_data_lock;
 
 /**************************************************
  * Local functions
@@ -110,6 +111,7 @@ static int audio_in_cb( const void *input, void *output,
         data[i] = ((record_data_t *)input)[i];
     }
 
+    pthread_spin_unlock(&new_data_lock);
     return paContinue;
 }
 
@@ -150,6 +152,7 @@ static int pa_init( PaStream ** const stream, const double fs,
 
 static fft_input_t get_max_freq(const fft_output_t data[], const size_t length, const double fs)
 {
+    static const fft_input_t THRESHOLD = 100.0f;
     fft_input_t max_val;
     size_t max_val_idx;
 
@@ -170,6 +173,11 @@ static fft_input_t get_max_freq(const fft_output_t data[], const size_t length, 
             max_val = cur_abs_val;
             max_val_idx = i;
         }
+    }
+
+    if (max_val < THRESHOLD)
+    {
+        return 0.0f;
     }
 
     // Tranform from index to frequency
@@ -193,6 +201,7 @@ int main(int argc, char * argv[])
     fft_data = create_fft_data(&fft_length);
     assert(fft_data != NULL);
 
+    assert(pthread_spin_init(&new_data_lock, PTHREAD_PROCESS_PRIVATE) == 0);
     if (pa_init(&stream, fs, audio_in_cb, &buf_idx))
     {
         return EXIT_FAILURE;
@@ -200,6 +209,8 @@ int main(int argc, char * argv[])
 
     Pa_StartStream(stream);
 
+    // Hide cursor
+    printf("\x1b[?25l");
     while ((pa_err_code = Pa_IsStreamActive(stream)) == 1 &&
             !check_if_q() )
     {
@@ -207,13 +218,18 @@ int main(int argc, char * argv[])
 
         fft(record_data[buf_idx], BUFFER_SIZE, fft_data, fft_length);
         max_freq = get_max_freq(fft_data, fft_length, fs);
-        printf("Max freq = %f, %zu\r", max_freq, temp_cnt++);
+        printf("Max freq = %5.0f, %zu\r", roundf(max_freq), temp_cnt);
+        fflush(stdout);
+        temp_cnt = (temp_cnt + 1) % 1000;
+        pthread_spin_lock(&new_data_lock);
     }
 
+    // show cursor
+    printf("\x1b[?25h\n");
+
     free(fft_data);
-
+    pthread_spin_destroy(&new_data_lock);
     PA_ASSERT(Pa_CloseStream(stream), "Cannot close PortAudio stream.");
-
     PA_ASSERT(Pa_Terminate(), "Error closing Portable Audio library.");
 
     return EXIT_SUCCESS;
